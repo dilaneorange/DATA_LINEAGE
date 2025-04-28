@@ -1,0 +1,99 @@
+import pandas as pd
+from collections import defaultdict
+
+# Chargement des données
+file_path = 'C:/Users/FDYZ3036/Documents/ORANGE/DEPENDANCES_FINAL/filtrage_3_tables1.csv'
+data = pd.read_csv(file_path, encoding='ISO-8859-1', sep=';', dtype=str)
+data = data.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+
+# Construction du graphe avec gestion de casse
+graph = defaultdict(set)
+table_mapping = {}
+all_tables = set()  # Pour stocker toutes les tables existantes
+
+# Analyser les données pour construire le graphe de dépendances
+for _, row in data.iterrows():
+    # Collecter les valeurs des colonnes Table_RDMS et Table_Hive en priorité
+    tables_by_column = {}
+    
+    if pd.notna(row.get('Table_RDMS', None)) and str(row['Table_RDMS']).strip():
+        tables_by_column['Table_RDMS'] = row['Table_RDMS']
+    if pd.notna(row.get('Table_Hive', None)) and str(row['Table_Hive']).strip():
+        tables_by_column['Table_Hive'] = row['Table_Hive']
+    
+    # Collecter les valeurs des colonnes Dep_datalake
+    dep_columns = [col for col in data.columns if col.startswith('Dep_datalake')]
+    for col in dep_columns:
+        if pd.notna(row.get(col, None)) and str(row[col]).strip():
+            tables_by_column[col] = row[col]
+    
+    table_values = list(tables_by_column.values())
+    
+    # Enregistrer toutes les tables
+    for col_name, value in tables_by_column.items():
+        value_lower = value.lower()
+        table_mapping[value_lower] = value  # Garder la casse originale
+        all_tables.add(value_lower)
+    
+    # Créer les relations entre toutes les paires de tables
+    for i in range(len(table_values)):
+        for j in range(i+1, len(table_values)):
+            src, dep = table_values[i], table_values[j]
+            src_lower, dep_lower = src.lower(), dep.lower()
+            graph[src_lower].add(dep_lower)
+            # Ajout de la relation inverse pour faciliter la recherche dans les deux sens
+            graph[dep_lower].add(src_lower)
+
+# Structure pour stocker les CDR et leurs tables RDMS associées
+cdr_to_rdms = defaultdict(set)
+
+# Pour chaque entrée dans le graphe
+for source_lower, dependencies in graph.items():
+    source = table_mapping.get(source_lower, source_lower)
+    
+    # Si la source est une table CDR
+    if source.startswith("CDR."):
+        # Parcourir toutes les dépendances de cette source CDR
+        for dep_lower in dependencies:
+            dep = table_mapping.get(dep_lower, dep_lower)
+            
+            # Vérifier si la dépendance est une table RDMS (présente dans la colonne Table_RDMS)
+            is_rdms = False
+            for _, row in data.iterrows():
+                if pd.notna(row.get('Table_RDMS', None)) and row['Table_RDMS'].lower() == dep_lower:
+                    is_rdms = True
+                    break
+            
+            if is_rdms:
+                cdr_to_rdms[source].add(dep)
+
+# Créer le DataFrame de sortie avec les CDR et leurs tables RDMS associées
+output_data = []
+
+# Pour chaque CDR, ajouter une ligne pour chaque table RDMS associée
+for cdr, rdms_tables in cdr_to_rdms.items():
+    if rdms_tables:  # S'il y a des tables RDMS associées à ce CDR
+        for rdms in rdms_tables:
+            output_data.append({
+                'CDR': cdr,
+                'Table_RDMS': rdms
+            })
+    else:
+        # Si aucune table RDMS n'est associée, ajouter quand même le CDR avec une valeur vide
+        output_data.append({
+            'CDR': cdr,
+            'Table_RDMS': ""
+        })
+
+# Convertir en DataFrame
+output_df = pd.DataFrame(output_data)
+
+# Définir le chemin du fichier de sortie
+output_file_path = 'C:/Users/FDYZ3036/Documents/ORANGE/DEPENDANCES_FINAL/cdr_to_rdms.csv'
+
+# Exporter le DataFrame en CSV
+output_df.to_csv(output_file_path, sep=';', index=False, encoding='ISO-8859-1')
+
+print(f"Fichier CSV généré avec succès: {output_file_path}")
+print(f"Nombre total de CDR: {len(cdr_to_rdms)}")
+print(f"Nombre total de paires CDR-Table_RDMS: {len(output_data)}")
