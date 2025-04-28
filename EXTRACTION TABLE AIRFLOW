@@ -1,0 +1,129 @@
+import os
+import re
+import csv
+import argparse
+from datetime import datetime
+
+def extract_tables_from_hql(file_path):
+    """
+    Extrait toutes les tables référencées dans un fichier HQL.
+    
+    Args:
+        file_path (str): Chemin vers le fichier HQL
+        
+    Returns:
+        list: Liste des tables trouvées (principales et dépendantes)
+        str: Nom du fichier
+    """
+    try:
+        # Lire le contenu du fichier HQL
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+            content = file.read()
+            
+        # Expressions régulières pour trouver les tables
+        table_patterns = [
+            # Tables dans les FROM
+            r'\bFROM\s+([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\b',
+            # Tables dans les JOIN
+            r'\bJOIN\s+([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\b',
+            # Tables dans les INSERT INTO
+            r'\bINSERT\s+INTO\s+(?:TABLE\s+)?([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\b',
+            # Tables avec alias
+            r'\b([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\s+(?:AS\s+)?[a-zA-Z0-9_]+\b'
+        ]
+        
+        # Trouver toutes les tables
+        all_tables = []
+        for pattern in table_patterns:
+            tables = re.findall(pattern, content, re.IGNORECASE)
+            all_tables.extend(tables)
+        
+        # Normaliser en majuscules et supprimer les doublons
+        all_tables = [table.upper() for table in all_tables]
+        unique_tables = list(set(all_tables))
+        
+        return unique_tables, os.path.basename(file_path)
+        
+    except Exception as e:
+        print(f"Erreur lors de l'analyse du fichier {file_path}: {str(e)}")
+        return [], os.path.basename(file_path)
+
+def scan_directory(root_path, output_csv):
+    """
+    Parcourt les répertoires à partir d'un chemin racine, 
+    analyse tous les fichiers .hql et écrit les tables trouvées dans un CSV.
+    
+    Args:
+        root_path (str): Chemin racine contenant les répertoires à analyser
+        output_csv (str): Chemin du fichier CSV de sortie
+    """
+    # S'assurer que le chemin racine existe
+    if not os.path.exists(root_path):
+        print(f"Le chemin {root_path} n'existe pas!")
+        return
+    
+    # Ouvrir le fichier CSV pour écriture avec le délimiteur correctement configuré
+    with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
+        # Utiliser le délimiteur point-virgule pour une meilleure compatibilité avec Excel européen
+        csv_writer = csv.writer(csvfile, delimiter=';', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        
+        # Écrire l'en-tête
+        csv_writer.writerow(['Répertoire', 'Fichier HQL', 'Table', 'Chemin complet'])
+        
+        total_dirs = 0
+        total_files = 0
+        total_tables = 0
+        
+        # Parcourir tous les sous-répertoires
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            # Filtrer pour ne garder que les fichiers .hql
+            hql_files = [f for f in filenames if f.lower().endswith('.hql')]
+            
+            if hql_files:
+                total_dirs += 1
+                print(f"Analyse du répertoire: {dirpath}")
+                
+                # Analyser chaque fichier HQL
+                for hql_file in hql_files:
+                    file_path = os.path.join(dirpath, hql_file)
+                    tables, filename = extract_tables_from_hql(file_path)
+                    
+                    total_files += 1
+                    total_tables += len(tables)
+                    
+                    # Écrire chaque table dans le CSV
+                    for table in tables:
+                        relative_dir = os.path.relpath(dirpath, root_path)
+                        csv_writer.writerow([relative_dir, filename, table, file_path])
+                    
+                    # Si aucune table n'est trouvée, enregistrer quand même le fichier
+                    if not tables:
+                        relative_dir = os.path.relpath(dirpath, root_path)
+                        csv_writer.writerow([relative_dir, filename, "AUCUNE_TABLE_TROUVÉE", file_path])
+    
+    print(f"\nAnalyse terminée!")
+    print(f"Statistiques:")
+    print(f"- {total_dirs} répertoires analysés")
+    print(f"- {total_files} fichiers HQL analysés")
+    print(f"- {total_tables} références de tables trouvées")
+    print(f"\nRésultats enregistrés dans: {output_csv}")
+
+if __name__ == "__main__":
+    # Configurer les arguments en ligne de commande
+    parser = argparse.ArgumentParser(description="Extraire les tables des fichiers HQL dans plusieurs répertoires")
+    parser.add_argument("--root", type=str, help="Chemin racine contenant les répertoires HQL")
+    parser.add_argument("--output", type=str, help="Chemin du fichier CSV de sortie")
+    
+    args = parser.parse_args()
+    
+    # Utiliser les arguments fournis ou les valeurs par défaut
+    root_path = args.root if args.root else input("Entrez le chemin racine contenant les répertoires HQL: ")
+    
+    if not args.output:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_csv = f"tables_hql_{timestamp}.csv"
+    else:
+        output_csv = args.output
+    
+    # Lancer l'analyse
+    scan_directory(root_path, output_csv)
