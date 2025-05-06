@@ -1,0 +1,163 @@
+import os
+import re
+import csv
+import argparse
+
+def extract_variable_from_file(file_path, variable_name):
+    """Extrait la valeur d'une variable depuis un fichier Python."""
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+            content = file.read()
+            
+            # Recherche de motifs comme: variable_name = "valeur" ou variable_name = 'valeur'
+            pattern1 = rf'{variable_name}\s*=\s*[\'"]([^\'"]*)[\'"]'
+            match = re.search(pattern1, content)
+            
+            if match:
+                return match.group(1).replace(';', ',')  # Remplace les points-virgules par des virgules
+            
+            # Recherche de motifs comme: 'variable_name': 'valeur' ou "variable_name": "valeur"
+            pattern2 = rf'[\'"]?{variable_name}[\'"]?\s*:\s*[\'"]([^\'"]*)[\'"]'
+            match = re.search(pattern2, content)
+            
+            if match:
+                return match.group(1).replace(';', ',')
+                
+            # Recherche dans les définitions des DAGs Airflow (format courant)
+            pattern3 = rf'default_args\s*=\s*{{.*?[\'"]?{variable_name}[\'"]?\s*:\s*[\'"]([^\'"]*)[\'"].*?}}'
+            match = re.search(pattern3, content, re.DOTALL)
+            
+            if match:
+                return match.group(1).replace(';', ',')
+                
+            return ""
+    except Exception as e:
+        print(f"Erreur lors de la lecture du fichier {file_path}: {e}")
+        return ""
+
+def extract_hql_filenames(file_path):
+    """Extrait les noms des fichiers HQL référencés dans le fichier Python."""
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+            content = file.read()
+            
+            # Recherche de noms de fichiers .hql dans des chaînes
+            hql_pattern = r'[\'"]([\w\-_./\\]+\.hql)[\'"]'
+            matches = re.findall(hql_pattern, content)
+            
+            # Si on ne trouve pas avec le pattern précédent, on essaie un pattern plus général
+            if not matches:
+                # Pattern pour détecter les chemins qui pourraient pointer vers des fichiers HQL
+                path_pattern = r'[\'"]((?:[\w\-_./\\]+/)*[\w\-_]+\.hql)[\'"]'
+                matches = re.findall(path_pattern, content)
+            
+            # Extrait juste les noms de fichiers sans le chemin complet pour l'affichage
+            hql_filenames = []
+            for match in matches:
+                # Prend le nom du fichier à partir du chemin complet
+                filename = os.path.basename(match)
+                if filename not in hql_filenames:
+                    hql_filenames.append(filename)
+            
+            return ', '.join(hql_filenames) if hql_filenames else ""
+    except Exception as e:
+        print(f"Erreur lors de l'extraction des fichiers HQL dans {file_path}: {e}")
+        return ""
+
+def main():
+    parser = argparse.ArgumentParser(description='Extraire des informations des scripts Python')
+    parser.add_argument('--directory', '-d', type=str, default='C:/Users/FDYZ3036/Documents/ORANGE/FORMATION/Airflow/dags',
+                        help='Chemin du répertoire à parcourir')
+    parser.add_argument('--output', '-o', type=str, default='C:/Users/FDYZ3036/Documents/ORANGE/FORMATION/CODE FINALE/scripts_infos.csv',
+                        help='Chemin du fichier CSV de sortie')
+    args = parser.parse_args()
+    
+    # Liste pour stocker toutes les informations
+    script_info_list = []
+    
+    # Parcours du répertoire et ses sous-répertoires
+    for root, dirs, files in os.walk(args.directory):
+        for file in files:
+            if file.endswith('.py'):
+                file_path = os.path.join(root, file)
+                
+                # Extraction des variables demandées
+                sql_file_path = extract_variable_from_file(file_path, "sql_file_path")
+                instance_id = extract_variable_from_file(file_path, "instance_id")
+                owner = extract_variable_from_file(file_path, "owner")
+                dag_id = extract_variable_from_file(file_path, "dag_id")
+                description = extract_variable_from_file(file_path, "description")
+                
+                # Extraction des noms de fichiers HQL
+                hql_files = extract_hql_filenames(file_path)
+                
+                # Si owner est vide, utilisez la valeur par défaut 'compute'
+                if not owner:
+                    owner = 'compute'
+                
+                # Stockage des informations
+                script_info = {
+                    'nom_script': file,
+                    'chemin_script': file_path,
+                    'sql_file_path': sql_file_path,
+                    'instance_id': instance_id,
+                    'owner': owner,
+                    'dag_id': dag_id,
+                    'description': description,
+                    'hql_files': hql_files
+                }
+                
+                script_info_list.append(script_info)
+                
+                # Affichage pour le suivi
+                print(f"Traitement du fichier: {file_path}")
+                print(f"  - owner: {owner}")
+                if hql_files:
+                    print(f"  - fichiers HQL: {hql_files}")
+    
+    # Écriture des informations dans un fichier CSV
+    # Essayer différents emplacements pour l'écriture du fichier
+    success = False
+    
+    # Liste des chemins à essayer (dans l'ordre de préférence)
+    paths_to_try = [
+        args.output,  # Essayer d'abord le chemin spécifié
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts_info.csv"),  # Dans le même répertoire que le script
+        os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), "Desktop", "scripts_info.csv"),  # Sur le bureau
+        os.path.join(os.environ.get('TEMP', '/tmp'), "scripts_info.csv")  # Dans le dossier temporaire
+    ]
+    
+    for output_path in paths_to_try:
+        try:
+            # Création du répertoire parent si nécessaire
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            
+            with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['nom_script', 'chemin_script', 'sql_file_path', 'instance_id', 
+                            'owner', 'dag_id', 'description', 'hql_files']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
+                
+                writer.writeheader()
+                for script_info in script_info_list:
+                    writer.writerow(script_info)
+            
+            print(f"Terminé ! Les informations ont été enregistrées dans {output_path}")
+            success = True
+            break  # Sortir de la boucle si l'écriture a réussi
+            
+        except PermissionError:
+            print(f"Erreur de permission sur {output_path}. Essai d'un autre emplacement...")
+        except Exception as e:
+            print(f"Erreur lors de l'écriture dans {output_path}: {e}")
+    
+    if not success:
+        print("ERREUR: Impossible d'écrire le fichier CSV dans aucun des emplacements testés.")
+        print("Voici un aperçu des données qui auraient été écrites:")
+        print("---------------------------------------------------")
+        for i, script_info in enumerate(script_info_list[:5]):  # Afficher les 5 premières entrées
+            print(f"Script {i+1}: {script_info['nom_script']}")
+            print(f"  - owner: {script_info['owner']}")
+            print(f"  - fichiers HQL: {script_info['hql_files']}")
+
+if __name__ == "__main__":
+    main()
