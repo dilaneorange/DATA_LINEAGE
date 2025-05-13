@@ -1,0 +1,98 @@
+#!/bin/bash
+# Variables à configurer
+SERVEUR="172.27.80.131"
+UTILISATEUR="cdr"
+PORT="22"
+DOSSIER_DISTANT="/home/cdr"
+FICHIER_CSV="./inventaire_fichiers_$(date +%s).csv"  # Nom unique avec timestamp
+
+# Fonction pour afficher les messages d'information
+info() {
+    echo -e "\033[1;34m[INFO]\033[0m $1"
+}
+
+# Fonction pour afficher les erreurs
+erreur() {
+    echo -e "\033[1;31m[ERREUR]\033[0m $1" >&2
+}
+
+# Vérifier si on peut écrire dans le fichier CSV
+touch "$FICHIER_CSV" 2>/dev/null
+if [ $? -ne 0 ]; then
+    erreur "Impossible d'écrire dans le fichier $FICHIER_CSV. Vérifiez les permissions."
+    exit 1
+fi
+
+# Vérifier la connexion au serveur
+info "Tentative de connexion à $SERVEUR..."
+
+# Test de connexion simple
+if ! ssh -o ConnectTimeout=5 -p "$PORT" "$UTILISATEUR@$SERVEUR" "echo 'test'" &>/dev/null; then
+    erreur "Impossible de se connecter au serveur. Vérifiez vos identifiants et la connectivité."
+    exit 1
+fi
+
+info "Connexion au serveur $SERVEUR réussie."
+
+# Créer l'en-tête du CSV avec séparateur pour assurer une structure propre
+info "Création du fichier CSV $FICHIER_CSV..."
+echo "Type;Permissions;Liens;Proprietaire;Groupe;Taille;Date_Modif;Heure_Modif;Nom_Fichier" > "$FICHIER_CSV"
+
+# Récupérer les informations détaillées des fichiers
+info "Récupération des informations sur les fichiers dans $DOSSIER_DISTANT..."
+
+# Utiliser un script distant pour générer un format parfaitement tabulaire
+ssh -p "$PORT" "$UTILISATEUR@$SERVEUR" "cd $DOSSIER_DISTANT && ls -la" | awk '
+BEGIN { FS=" "; OFS=";" }
+NR > 1 && $9 != "." && $9 != ".." {
+    # Type du fichier
+    type = substr($1, 1, 1);
+    
+    # Permissions
+    perm = substr($1, 2);
+    
+    # Récupérer liens, propriétaire, groupe, taille
+    liens = $2;
+    proprio = $3;
+    groupe = $4;
+    taille = $5;
+    
+    # Date et heure
+    date = $6" "$7;
+    heure = $8;
+    
+    # Nom du fichier (possiblement avec espaces)
+    nom = $9;
+    for(i=10; i<=NF; i++) {
+        nom = nom" "$i;
+    }
+    
+    # Échapper les guillemets dans le nom si nécessaire
+    gsub(/"/, "\"\"", nom);
+    
+    # Sortie au format CSV strict avec séparateur point-virgule
+    print type, perm, liens, proprio, groupe, taille, date, heure, "\""nom"\"";
+}' >> "$FICHIER_CSV"
+
+if [ $? -ne 0 ]; then
+    erreur "Impossible de récupérer les informations des fichiers distants."
+    exit 1
+fi
+
+# Vérifier si le CSV contient des données
+LIGNES=$(wc -l < "$FICHIER_CSV")
+if [ "$LIGNES" -le 1 ]; then
+    info "Aucun fichier trouvé dans le dossier distant ou erreur lors de la récupération."
+else
+    info "Informations récupérées pour $((LIGNES-1)) fichiers."
+fi
+
+info "Les informations sur les fichiers ont été enregistrées dans $FICHIER_CSV"
+
+# Afficher un aperçu du CSV
+echo "---------------------------------------------------------------"
+echo "Aperçu du fichier CSV généré :"
+echo "---------------------------------------------------------------"
+head -n 10 "$FICHIER_CSV"
+echo "---------------------------------------------------------------"
+info "Opération terminée avec succès."
