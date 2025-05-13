@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# Variables à configurer
+SERVEUR="172.27.80.131"
+UTILISATEUR="cdr"
+PORT="22"
+DOSSIER_DISTANT="/home/cdr"
+# Utilisation d'un chemin relatif pour éviter les problèmes de notation Windows
+DOSSIER_LOCAL="./fichiers_recuperes"
+
+# Fonction pour afficher les messages d'information
+info() {
+    echo -e "\033[1;34m[INFO]\033[0m $1"
+}
+
+# Fonction pour afficher les erreurs
+erreur() {
+    echo -e "\033[1;31m[ERREUR]\033[0m $1" >&2
+}
+
+# Création du dossier local s'il n'existe pas
+info "Création du dossier local pour les fichiers téléchargés..."
+mkdir -p "$DOSSIER_LOCAL"
+if [ $? -ne 0 ]; then
+    erreur "Impossible de créer le dossier local $DOSSIER_LOCAL"
+    exit 1
+fi
+
+# Vérifier la connexion au serveur
+info "Tentative de connexion à $SERVEUR..."
+
+# Test de connexion simple
+if ! ssh -o ConnectTimeout=5 -p "$PORT" "$UTILISATEUR@$SERVEUR" "echo 'test'" &>/dev/null; then
+    erreur "Impossible de se connecter au serveur. Vérifiez vos identifiants et la connectivité."
+    exit 1
+fi
+
+info "Connexion au serveur $SERVEUR réussie."
+
+# Lister les fichiers du dossier distant
+info "Récupération de la liste des fichiers dans $DOSSIER_DISTANT..."
+LISTE_FICHIERS=$(ssh -p "$PORT" "$UTILISATEUR@$SERVEUR" "ls -la $DOSSIER_DISTANT")
+
+if [ $? -ne 0 ]; then
+    erreur "Impossible de lister les fichiers du dossier distant."
+    exit 1
+fi
+
+# Afficher la liste des fichiers
+info "Liste des fichiers sur le serveur distant ($DOSSIER_DISTANT):"
+echo "---------------------------------------------------------------"
+echo "$LISTE_FICHIERS"
+echo "---------------------------------------------------------------"
+
+# Télécharger les fichiers
+info "Téléchargement des fichiers..."
+
+# Afficher la commande pour déboguer
+echo "Commande exécutée: scp -P $PORT -r $UTILISATEUR@$SERVEUR:$DOSSIER_DISTANT/* $DOSSIER_LOCAL/"
+
+# Exécuter la commande scp pour le téléchargement
+scp -P "$PORT" -r "$UTILISATEUR@$SERVEUR:$DOSSIER_DISTANT/*" "$DOSSIER_LOCAL/"
+
+if [ $? -ne 0 ]; then
+    erreur "Problème lors du téléchargement des fichiers."
+    exit 1
+fi
+
+# Lister les fichiers téléchargés
+info "Fichiers téléchargés avec succès dans $DOSSIER_LOCAL:"
+ls -la "$DOSSIER_LOCAL"
+
+info "Opération terminée avec succès."
