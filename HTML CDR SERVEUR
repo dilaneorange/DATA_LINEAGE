@@ -1,0 +1,175 @@
+#!/bin/bash
+# Variables à configurer
+SERVEUR="172.27.80.131"
+UTILISATEUR="cdr"
+PORT="22"
+DOSSIER_DISTANT="/home/cdr"
+FICHIER_HTML="./inventaire_fichiers_$(date +%s).html"  # Nom unique avec timestamp
+
+# Fonction pour afficher les messages d'information
+info() {
+    echo -e "\033[1;34m[INFO]\033[0m $1"
+}
+
+# Fonction pour afficher les erreurs
+erreur() {
+    echo -e "\033[1;31m[ERREUR]\033[0m $1" >&2
+}
+
+# Vérifier si on peut écrire dans le fichier HTML
+touch "$FICHIER_HTML" 2>/dev/null
+if [ $? -ne 0 ]; then
+    erreur "Impossible d'écrire dans le fichier $FICHIER_HTML. Vérifiez les permissions."
+    exit 1
+fi
+
+# Vérifier la connexion au serveur
+info "Tentative de connexion à $SERVEUR..."
+
+# Test de connexion simple
+if ! ssh -o ConnectTimeout=5 -p "$PORT" "$UTILISATEUR@$SERVEUR" "echo 'test'" &>/dev/null; then
+    erreur "Impossible de se connecter au serveur. Vérifiez vos identifiants et la connectivité."
+    exit 1
+fi
+
+info "Connexion au serveur $SERVEUR réussie."
+
+# Créer l'en-tête du fichier HTML
+info "Création du fichier HTML $FICHIER_HTML..."
+cat > "$FICHIER_HTML" << EOF
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventaire des fichiers sur $SERVEUR:$DOSSIER_DISTANT</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            position: sticky;
+            top: 0;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        tr:hover {
+            background-color: #eaeaea;
+        }
+        .directory {
+            color: blue;
+            font-weight: bold;
+        }
+        .executable {
+            color: green;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>Inventaire des fichiers sur $SERVEUR:$DOSSIER_DISTANT</h1>
+    <p>Généré le $(date '+%d/%m/%Y à %H:%M:%S')</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Permissions</th>
+                <th>Liens</th>
+                <th>Propriétaire</th>
+                <th>Groupe</th>
+                <th>Taille</th>
+                <th>Date Modif</th>
+                <th>Heure Modif</th>
+                <th>Nom Fichier</th>
+            </tr>
+        </thead>
+        <tbody>
+EOF
+
+# Récupérer les informations détaillées des fichiers
+info "Récupération des informations sur les fichiers dans $DOSSIER_DISTANT..."
+
+# Récupérer les données et les formater en HTML
+ssh -p "$PORT" "$UTILISATEUR@$SERVEUR" "cd $DOSSIER_DISTANT && ls -la" | awk '
+NR > 1 && $9 != "." && $9 != ".." {
+    # Type du fichier
+    type = substr($1, 1, 1);
+    
+    # Permissions
+    perm = substr($1, 2);
+    
+    # Récupérer liens, propriétaire, groupe, taille
+    liens = $2;
+    proprio = $3;
+    groupe = $4;
+    taille = $5;
+    
+    # Date et heure
+    date = $6" "$7;
+    heure = $8;
+    
+    # Nom du fichier (possiblement avec espaces)
+    nom = $9;
+    for(i=10; i<=NF; i++) {
+        nom = nom" "$i;
+    }
+    
+    # Échapper les caractères HTML dans le nom
+    gsub(/&/, "\\&amp;", nom);
+    gsub(/</, "\\&lt;", nom);
+    gsub(/>/, "\\&gt;", nom);
+    
+    # Déterminer la classe CSS selon le type
+    classe = "";
+    if (type == "d") classe = " class=\"directory\"";
+    else if (index(perm, "x") > 0) classe = " class=\"executable\"";
+    
+    # Générer la ligne HTML
+    printf "            <tr>\n";
+    printf "                <td>%s</td>\n", type;
+    printf "                <td>%s</td>\n", perm;
+    printf "                <td>%s</td>\n", liens;
+    printf "                <td>%s</td>\n", proprio;
+    printf "                <td>%s</td>\n", groupe;
+    printf "                <td>%s</td>\n", taille;
+    printf "                <td>%s</td>\n", date;
+    printf "                <td>%s</td>\n", heure;
+    printf "                <td%s>%s</td>\n", classe, nom;
+    printf "            </tr>\n";
+}' >> "$FICHIER_HTML"
+
+if [ $? -ne 0 ]; then
+    erreur "Impossible de récupérer les informations des fichiers distants."
+    exit 1
+fi
+
+# Fermer les balises HTML
+cat >> "$FICHIER_HTML" << EOF
+        </tbody>
+    </table>
+</body>
+</html>
+EOF
+
+info "Les informations sur les fichiers ont été enregistrées dans $FICHIER_HTML"
+info "Vous pouvez ouvrir ce fichier dans un navigateur web pour visualiser les données."
+info "Opération terminée avec succès."
