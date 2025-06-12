@@ -1,0 +1,554 @@
+import streamlit as st
+import pandas as pd
+from collections import defaultdict
+import re
+import os
+
+# Configuration de la page
+st.set_page_config(
+    page_title="Orange Cameroun - Analyseur de Dépendances de Champs DWH",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Couleurs Orange Cameroun
+PRIMARY_COLOR = "#FF7900"  # Orange principal
+SECONDARY_COLOR = "#000000"  # Noir
+BG_COLOR = "#FFFFFF"  # Blanc
+
+# Appliquer CSS personnalisé pour les couleurs Orange
+st.markdown(f"""
+<style>
+    .stApp {{
+        background-color: {BG_COLOR};
+    }}
+    .main .block-container {{
+        padding-top: 2rem;
+    }}
+    h1, h2, h3 {{
+        color: {PRIMARY_COLOR};
+    }}
+    .stButton button {{
+        background-color: {PRIMARY_COLOR};
+        color: white;
+    }}
+    .stButton button:hover {{
+        background-color: {PRIMARY_COLOR};
+        color: white;
+        opacity: 0.8;
+    }}
+    .st-bo {{
+        border-color: {PRIMARY_COLOR};
+    }}
+    .st-cc {{
+        color: {PRIMARY_COLOR};
+    }}
+    .stProgress .st-ev {{
+        background-color: {PRIMARY_COLOR};
+    }}
+    .stSidebar {{
+        background-color: #F5F5F5;
+    }}
+    .small-font {{
+        font-size: 0.8rem;
+    }}
+    .result-box {{
+        border-left: 3px solid {PRIMARY_COLOR};
+        padding-left: 10px;
+        margin: 10px 0;
+        background-color: #F9F9F9;
+    }}
+    .metric-card {{
+        background-color: #F9F9F9;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 4px solid {PRIMARY_COLOR};
+        margin: 10px 0;
+    }}
+    .field-info {{
+        background-color: #FFF5F0;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid {PRIMARY_COLOR};
+        margin: 5px 0;
+    }}
+    .table-name {{
+        color: #666;
+        font-size: 0.9em;
+        font-weight: normal;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# Logo Orange 
+st.sidebar.markdown(f"""
+<div style="text-align: center; padding: 1rem 0;">
+    <h2 style="color: {PRIMARY_COLOR};">Orange Cameroun</h2>
+    <h3>Analyseur de Dépendances<br>de Champs DWH</h3>
+</div>
+""", unsafe_allow_html=True)
+
+# Fonction pour charger les données
+@st.cache_data
+def load_data(uploaded_file):
+    if uploaded_file is not None:
+        try:
+            data = pd.read_csv(uploaded_file, encoding='ISO-8859-1', sep=';', dtype=str)
+            data = data.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+            return data, True
+        except Exception as e:
+            st.error(f"Erreur lors du chargement du fichier: {e}")
+            return None, False
+    return None, False
+
+# Fonction pour créer des données de démonstration
+def create_demo_data():
+    demo_data = {
+        'Tables utilisées': [
+            'dim.dt_zte_usage_type, mon.spark_ft_contract_snapshot, cdr.spark_it_zte_adjustment',
+            'mon.spark_ft_contract_snapshot',
+            'cdr.spark_it_zte_loan_cdr, mon.spark_ft_contract_snapshot',
+            'cdr.spark_it_zte_emergency_data, mon.spark_ft_contract_snapshot',
+            'cdr.spark_it_zebra_transac',
+            'dim.dt_subscription_channel, mon.spark_ft_contract_snapshot, cdr.spark_it_zte_recharge'
+        ],
+        'Table calculée': [
+            'AGG.SPARK_FT_GLOBAL_ACTIVITY_DAILY',
+            'AGG.SPARK_FT_GLOBAL_ACTIVITY_DAILY',
+            'AGG.SPARK_FT_GLOBAL_ACTIVITY_DAILY',
+            'MON.SPARK_FT_EMERGENCY_DATA',
+            'MON.SPARK_FT_REFILL',
+            'MON.SPARK_FT_RECHARGE'
+        ],
+        'dwh_fields': [
+            'COMMERCIAL_OFFER_CODE',
+            'TRANSACTION_DATE',
+            'TRANSACTION_DATE',
+            'INSERT_DATE',
+            'TRANSACTION_TYPE',
+            'OPERATOR_CODE'
+        ],
+        'Champ': [
+            'profile',
+            'create_date',
+            'event_date',
+            'insert_date',
+            'transaction_type',
+            'provider_id'
+        ],
+        'Alias': [
+            'commercial_offer_code',
+            'transaction_date',
+            'transaction_date',
+            'source_insert_date',
+            'transaction_type',
+            'operator_code'
+        ],
+        'Etape': ['1', '1', '1', '2', '2', '3'],
+        'Chemin du fichier HQL': [
+            'C:\\Scripts\\GLOBAL_ACTIVITY\\spark_compute_and_insert_adjustement_activity.hql',
+            'C:\\Scripts\\GLOBAL_ACTIVITY\\spark_compute_and_insert_contract_snapshot_activity.hql',
+            'C:\\Scripts\\GLOBAL_ACTIVITY\\spark_compute_and_insert_emergency_voice_loan.hql',
+            'C:\\Scripts\\FT\\EMERGENCY_DATA\\compute_and_insert_into_spark_ft_emergency_data.hql',
+            'C:\\Scripts\\FT\\ZEBRA\\compute_and_insert_into_spark_ft_refill.hql',
+            'C:\\Scripts\\FT\\RECHARGE\\compute_and_insert_into_spark_ft_recharge.hql'
+        ],
+        'Opérations arithmétiques': ['', '', '', '', '', ''],
+        'Formule SQL': [
+            '`c`.`profile`',
+            '`a`.`create_date`',
+            '`_q_1`.`event_date`',
+            '`t1`.`insert_date`',
+            '`a`.`transaction_type`',
+            '(CASE `itrech`.`provider_id` WHEN 0 THEN \'OCM\' WHEN 1 THEN \'SET\' ELSE CAST(`itrech`.`provider_id` AS STRING) END)'
+        ]
+    }
+    return pd.DataFrame(demo_data)
+
+# Sélection et chargement du fichier
+st.sidebar.header("Configuration")
+uploaded_file = st.sidebar.file_uploader("Charger un fichier CSV d'extraction de champs", type=['csv'])
+
+data = None
+data_loaded = False
+
+if uploaded_file:
+    data, data_loaded = load_data(uploaded_file)
+
+# Si aucun fichier n'est chargé, proposer d'utiliser les données de démonstration
+if not data_loaded:
+    if st.sidebar.button("Utiliser données de démo"):
+        data = create_demo_data()
+        data_loaded = True
+
+# Interface principale
+st.title("Analyseur de Dépendances de Champs DWH")
+
+if not data_loaded:
+    st.info("Veuillez charger un fichier CSV ou utiliser les données de démonstration pour commencer.")
+    st.markdown("""
+    ### Structure attendue du fichier
+    Le fichier CSV doit contenir les colonnes suivantes:
+    - **Tables utilisées**: Tables sources utilisées dans le calcul
+    - **Table calculée**: Table de destination du calcul  
+    - **dwh_fields**: Nom du champ DWH (clé de recherche)
+    - **Champ**: Champ source dans la table
+    - **Alias**: Alias du champ dans la requête
+    - **Etape**: Numéro d'étape du processus
+    - **Chemin du fichier HQL**: Chemin vers le script HQL
+    - **Formule SQL**: Formule SQL utilisée pour le calcul
+    """)
+else:
+    # Construire les mappings de données
+    @st.cache_data
+    def build_field_mappings(data):
+        field_dependencies = defaultdict(set)
+        field_calculated_tables = defaultdict(set)
+        field_sql_formulas = defaultdict(set)
+        field_hql_paths = defaultdict(set)
+        field_source_fields = defaultdict(set)
+        field_aliases = defaultdict(set)
+        field_steps = defaultdict(set)
+        field_used_tables = defaultdict(set)
+        
+        # Nouveau mapping pour associer chaque dépendance avec sa table calculée
+        field_dependencies_with_tables = defaultdict(list)
+        
+        # Créer un ensemble de tous les champs DWH disponibles
+        all_dwh_fields = set()
+        
+        for _, row in data.iterrows():
+            dwh_field = str(row.get('dwh_fields', '')).strip().upper()
+            if dwh_field and dwh_field != 'NAN':
+                all_dwh_fields.add(dwh_field)
+                
+                # Table calculée pour cette ligne
+                calculated_table = str(row.get('Table calculée', '')).strip() if pd.notna(row.get('Table calculée', None)) else ''
+                
+                # Tables utilisées
+                if pd.notna(row.get('Tables utilisées', None)) and str(row['Tables utilisées']).strip():
+                    field_used_tables[dwh_field].add(row['Tables utilisées'])
+                
+                # Table calculée
+                if calculated_table:
+                    field_calculated_tables[dwh_field].add(calculated_table)
+                
+                # Champ source avec table calculée associée
+                if pd.notna(row.get('Champ', None)) and str(row['Champ']).strip():
+                    source_field = str(row['Champ']).strip()
+                    field_source_fields[dwh_field].add(source_field)
+                    field_dependencies[dwh_field].add(source_field)
+                    
+                    # Associer le champ source avec sa table calculée
+                    field_dependencies_with_tables[dwh_field].append({
+                        'source_field': source_field,
+                        'calculated_table': calculated_table
+                    })
+                
+                # Alias
+                if pd.notna(row.get('Alias', None)) and str(row['Alias']).strip():
+                    field_aliases[dwh_field].add(row['Alias'])
+                
+                # Étape
+                if pd.notna(row.get('Etape', None)) and str(row['Etape']).strip():
+                    field_steps[dwh_field].add(row['Etape'])
+                
+                # Chemin HQL
+                if pd.notna(row.get('Chemin du fichier HQL', None)) and str(row['Chemin du fichier HQL']).strip():
+                    field_hql_paths[dwh_field].add(row['Chemin du fichier HQL'])
+                
+                # Formule SQL
+                if pd.notna(row.get('Formule SQL', None)) and str(row['Formule SQL']).strip():
+                    field_sql_formulas[dwh_field].add(row['Formule SQL'])
+        
+        return {
+            'all_fields': sorted(all_dwh_fields),
+            'dependencies': field_dependencies,
+            'dependencies_with_tables': field_dependencies_with_tables,
+            'calculated_tables': field_calculated_tables,
+            'sql_formulas': field_sql_formulas,
+            'hql_paths': field_hql_paths,
+            'source_fields': field_source_fields,
+            'aliases': field_aliases,
+            'steps': field_steps,
+            'used_tables': field_used_tables
+        }
+    
+    # Construire les mappings
+    mappings = build_field_mappings(data)
+    
+    # Interface utilisateur pour l'analyse
+    st.markdown("### Recherche de champ DWH")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        # Sélection du champ DWH
+        selected_field = st.selectbox(
+            "Choisir un champ DWH",
+            [""] + mappings['all_fields'],
+            help="Sélectionnez le champ DWH à analyser"
+        )
+        
+        # Ou saisie manuelle
+        manual_field = st.text_input("Ou saisir manuellement le nom du champ DWH")
+        
+        # Utiliser la saisie manuelle si fournie
+        if manual_field.strip():
+            field_to_analyze = manual_field.strip().upper()
+        else:
+            field_to_analyze = selected_field
+    
+    with col2:
+        # Mode d'analyse
+        analysis_mode = st.radio(
+            "Module d'analyse",
+            [
+                "Dépendances du champ",
+                "Tables utilisées pour le calcul", 
+                "Formules SQL",
+                "Chemins HQL",
+                "Analyse complète"
+            ],
+            horizontal=False
+        )
+    
+    if field_to_analyze:
+        if field_to_analyze not in mappings['all_fields']:
+            st.error(f"Le champ '{field_to_analyze}' n'existe pas dans le système.")
+            
+            # Suggestions
+            similar_fields = [f for f in mappings['all_fields'] 
+                            if field_to_analyze.lower() in f.lower() or 
+                               any(word in f.lower() for word in field_to_analyze.lower().split('_'))]
+            if similar_fields:
+                st.markdown("#### Champs similaires :")
+                for field in similar_fields[:10]:
+                    st.markdown(f"- {field}")
+        else:
+            st.markdown(f"### Résultats pour '{field_to_analyze}'")
+            
+            # Afficher les résultats selon le mode d'analyse
+            if analysis_mode == "Dépendances du champ":
+                dependencies_with_tables = mappings['dependencies_with_tables'].get(field_to_analyze, [])
+                st.markdown(f"#### Champs sources utilisés ({len(dependencies_with_tables)})")
+                
+                if dependencies_with_tables:
+                    with st.container():
+                        st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                        
+                        # Regrouper par champ source pour éviter les doublons
+                        field_table_map = {}
+                        for dep in dependencies_with_tables:
+                            source_field = dep['source_field']
+                            calc_table = dep['calculated_table']
+                            if source_field not in field_table_map:
+                                field_table_map[source_field] = set()
+                            if calc_table:
+                                field_table_map[source_field].add(calc_table)
+                        
+                        for source_field in sorted(field_table_map.keys()):
+                            tables = field_table_map[source_field]
+                            if tables:
+                                tables_str = ', '.join(sorted(tables))
+                                st.markdown(f"- **{source_field}** <span class='table-name'>({tables_str})</span>", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"- **{source_field}**")
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+                else:
+                    st.info("Aucun champ source trouvé.")
+            
+            elif analysis_mode == "Tables utilisées pour le calcul":
+                calculated_tables = mappings['calculated_tables'].get(field_to_analyze, set())
+                used_tables = mappings['used_tables'].get(field_to_analyze, set())
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"#### Tables calculées ({len(calculated_tables)})")
+                    if calculated_tables:
+                        with st.container():
+                            st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                            for table in sorted(calculated_tables):
+                                st.markdown(f"- **{table}**")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.info("Aucune table calculée trouvée.")
+                
+                with col2:
+                    st.markdown(f"#### Tables utilisées ({len(used_tables)})")
+                    if used_tables:
+                        with st.container():
+                            st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                            for tables_group in sorted(used_tables):
+                                # Diviser les tables multiples par virgule
+                                individual_tables = [t.strip() for t in tables_group.split(',')]
+                                for table in individual_tables:
+                                    st.markdown(f"- {table}")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.info("Aucune table utilisée trouvée.")
+            
+            elif analysis_mode == "Formules SQL":
+                sql_formulas = mappings['sql_formulas'].get(field_to_analyze, set())
+                st.markdown(f"#### Formules SQL ({len(sql_formulas)})")
+                
+                if sql_formulas:
+                    for i, formula in enumerate(sorted(sql_formulas), 1):
+                        with st.expander(f"Formule {i}"):
+                            st.code(formula, language='sql')
+                else:
+                    st.info("Aucune formule SQL trouvée.")
+            
+            elif analysis_mode == "Chemins HQL":
+                hql_paths = mappings['hql_paths'].get(field_to_analyze, set())
+                st.markdown(f"#### Chemins HQL ({len(hql_paths)})")
+                
+                if hql_paths:
+                    with st.container():
+                        st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                        for path in sorted(hql_paths):
+                            # Extraire le nom du fichier pour un affichage plus propre
+                            filename = os.path.basename(path)
+                            st.markdown(f"- **{filename}**")
+                            st.markdown(f"  `{path}`")
+                        st.markdown('</div>', unsafe_allow_html=True)
+                else:
+                    st.info("Aucun chemin HQL trouvé.")
+            
+            elif analysis_mode == "Analyse complète":
+                # Affichage complet avec métriques
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    dependencies_count = len(mappings['dependencies'].get(field_to_analyze, set()))
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h4>🔗 Champs sources</h4>
+                        <h2>{dependencies_count}</h2>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    tables_count = len(mappings['calculated_tables'].get(field_to_analyze, set()))
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h4>📊 Tables calculées</h4>
+                        <h2>{tables_count}</h2>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    formulas_count = len(mappings['sql_formulas'].get(field_to_analyze, set()))
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h4>⚡ Formules SQL</h4>
+                        <h2>{formulas_count}</h2>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # Détails complets
+                st.markdown("#### Informations détaillées")
+                
+                # Informations de base
+                source_fields = mappings['source_fields'].get(field_to_analyze, set())
+                aliases = mappings['aliases'].get(field_to_analyze, set())
+                steps = mappings['steps'].get(field_to_analyze, set())
+                
+                st.markdown(f"""
+                <div class="field-info">
+                    <strong>Champs sources:</strong> {', '.join(sorted(source_fields)) if source_fields else 'Aucun'}<br>
+                    <strong>Alias:</strong> {', '.join(sorted(aliases)) if aliases else 'Aucun'}<br>
+                    <strong>Étapes:</strong> {', '.join(sorted(steps)) if steps else 'Aucune'}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Tabs pour les détails
+                tab1, tab2, tab3, tab4 = st.tabs(["🔗 Champs sources", "📊 Tables", "⚡ Formules SQL", "📁 Chemins HQL"])
+                
+                with tab1:
+                    dependencies_with_tables = mappings['dependencies_with_tables'].get(field_to_analyze, [])
+                    if dependencies_with_tables:
+                        st.markdown("**Champs sources utilisés:**")
+                        
+                        # Regrouper par champ source
+                        field_table_map = {}
+                        for dep in dependencies_with_tables:
+                            source_field = dep['source_field']
+                            calc_table = dep['calculated_table']
+                            if source_field not in field_table_map:
+                                field_table_map[source_field] = set()
+                            if calc_table:
+                                field_table_map[source_field].add(calc_table)
+                        
+                        for source_field in sorted(field_table_map.keys()):
+                            tables = field_table_map[source_field]
+                            if tables:
+                                tables_str = ', '.join(sorted(tables))
+                                st.markdown(f"- **{source_field}** <span class='table-name'>({tables_str})</span>", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"- **{source_field}**")
+                    else:
+                        st.info("Aucun champ source trouvé.")
+                
+                with tab2:
+                    calculated_tables = mappings['calculated_tables'].get(field_to_analyze, set())
+                    used_tables = mappings['used_tables'].get(field_to_analyze, set())
+                    
+                    if calculated_tables:
+                        st.markdown("**Tables calculées:**")
+                        for table in sorted(calculated_tables):
+                            st.markdown(f"- {table}")
+                    
+                    if used_tables:
+                        st.markdown("**Tables utilisées:**")
+                        for tables_group in sorted(used_tables):
+                            individual_tables = [t.strip() for t in tables_group.split(',')]
+                            for table in individual_tables:
+                                st.markdown(f"- {table}")
+                    
+                    if not calculated_tables and not used_tables:
+                        st.info("Aucune table trouvée.")
+                
+                with tab3:
+                    sql_formulas = mappings['sql_formulas'].get(field_to_analyze, set())
+                    if sql_formulas:
+                        for i, formula in enumerate(sorted(sql_formulas), 1):
+                            st.markdown(f"**Formule {i}:**")
+                            st.code(formula, language='sql')
+                    else:
+                        st.info("Aucune formule SQL trouvée.")
+                
+                with tab4:
+                    hql_paths = mappings['hql_paths'].get(field_to_analyze, set())
+                    if hql_paths:
+                        for path in sorted(hql_paths):
+                            filename = os.path.basename(path)
+                            st.markdown(f"**{filename}**")
+                            st.code(path, language='bash')
+                    else:
+                        st.info("Aucun chemin HQL trouvé.")
+
+# Statistiques générales dans la sidebar
+if data_loaded:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Statistiques générales")
+    
+    total_fields = len(mappings['all_fields'])
+    total_tables = len(set().union(*[tables for tables in mappings['calculated_tables'].values()]))
+    total_formulas = sum(len(formulas) for formulas in mappings['sql_formulas'].values())
+    total_paths = len(set().union(*[paths for paths in mappings['hql_paths'].values()]))
+    
+    st.sidebar.metric("Total champs DWH", total_fields)
+    st.sidebar.metric("Total tables calculées", total_tables)
+    st.sidebar.metric("Total formules SQL", total_formulas)
+    st.sidebar.metric("Total chemins HQL", total_paths)
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center" class="small-font">
+    <p>© Orange Cameroun - Analyseur de Dépendances de Champs DWH</p>
+</div>
+""", unsafe_allow_html=True)
