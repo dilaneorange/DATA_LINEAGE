@@ -1,0 +1,108 @@
+#!/bin/bash
+
+# Configuration SSH
+SSH_HOST="172.27.80.131"
+SSH_USER="cdr"
+REMOTE_DIR="/BDI/CDR/IN"  # À adapter si nécessaire
+
+# Chemins locaux
+html_file="/opt/script/DATA_LINEAGE_2025/CRD_NRT/rapport_cdr.html"
+temp_file="/opt/script/DATA_LINEAGE_2025/CRD_NRT/temp.html"
+updated_file="/opt/script/DATA_LINEAGE_2025/CRD_NRT/updated_table.html"
+
+# Initialisation du fichier HTML
+cat "$temp_file" > "$html_file"
+
+# Variables de date
+datef1=$(date -d "yesterday" +'%Y%m%d')
+datef0=$(date +'%Y%m%d')
+datep=$(date -d "yesterday" +'%Y-%m-%d')
+dateb=$(date +'%d%m%y')
+dated=$(date -d "yesterday" +'%d%m%y')
+
+# 🔍 Récupération de datef5 depuis un vrai fichier sur le serveur distant
+remote_file=$(ssh ${SSH_USER}@${SSH_HOST} "find $REMOTE_DIR -type f -name '${datef1}_*_ZsmartToBDI.csv' | sort | tail -n 1")
+file_basename=$(basename "$remote_file")
+datef5="${file_basename%%_ZsmartToBDI.csv}"  # Exemple : 20250611_012240
+
+# Substitution dans le fichier HTML
+sed -i "s|DATEF1|$datef1|g" "$html_file"
+sed -i "s|DATEF0|$datef0|g" "$html_file"
+sed -i "s|DATEP|$datep|g" "$html_file"
+sed -i "s|DATEB|$dateb|g" "$html_file"
+sed -i "s|DATED|$dated|g" "$html_file"
+sed -i "s|DATEF5|$datef5|g" "$html_file"
+
+# Comparaison de temps
+compare_time() {
+    local current_time=$(date +%H:%M)
+    local sla_time="$1"
+    [[ "$current_time" > "$sla_time" ]]
+}
+
+# 🔄 Recherche d’un fichier distant (dossier ou son parent)
+get_remote_file_info() {
+    local directory="$1"
+    local filename_pattern="$2"
+
+    ssh "${SSH_USER}@${SSH_HOST}" bash <<EOF
+file_path=\$(find "$directory" -type f -name "*$filename_pattern*" | head -n 1)
+
+if [[ -z "\$file_path" ]]; then
+    parent_dir=\$(dirname "$directory")
+    file_path=\$(find "\$parent_dir" -type f -name "*$filename_pattern*" | head -n 1)
+fi
+
+if [[ -n "\$file_path" ]]; then
+    file_time=\$(stat -c %y "\$file_path" | cut -d' ' -f2 | cut -d':' -f1-2)
+    file_size=\$(stat -c %s "\$file_path")
+    echo "\$file_path|\$file_time|\$file_size"
+fi
+EOF
+}
+
+# Traitement ligne par ligne du fichier HTML
+> "$updated_file"
+while IFS= read -r line; do
+    if [[ $line == *"<tr>"* ]] && [[ $line == *"<td>"* ]]; then
+        if [[ $line =~ \<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\> ]]; then
+            file_name="${BASH_REMATCH[3]}"
+            directory="${BASH_REMATCH[4]}"
+            sla_time="${BASH_REMATCH[7]}"
+
+            remote_info=$(get_remote_file_info "$directory" "$file_name")
+            if [[ -n "$remote_info" ]]; then
+                file_time=$(echo "$remote_info" | cut -d'|' -f2)
+                file_size=$(echo "$remote_info" | cut -d'|' -f3)
+                file_size_ko=$((file_size / 1024))
+                line=$(echo "$line" | sed "s|<td>NOK</td><td>NOK</td>|<td>$file_time</td><td>$file_size_ko</td>|g")
+                line=$(echo "$line" | sed 's|<td>|<td class="class-ok">|g')
+            else
+                if compare_time "$sla_time"; then
+                    line=$(echo "$line" | sed 's|<td>|<td class="class-nok">|g')
+                fi
+            fi
+        elif [[ $line =~ \<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\>\<td[^\>]*\>([^\<]*)\<\/td\> ]]; then
+            file_name="${BASH_REMATCH[2]}"
+            directory="${BASH_REMATCH[3]}"
+            sla_time="${BASH_REMATCH[6]}"
+
+            remote_info=$(get_remote_file_info "$directory" "$file_name")
+            if [[ -n "$remote_info" ]]; then
+                file_time=$(echo "$remote_info" | cut -d'|' -f2)
+                file_size=$(echo "$remote_info" | cut -d'|' -f3)
+                file_size_ko=$((file_size / 1024))
+                line=$(echo "$line" | sed "s|<td>NOK</td><td>NOK</td>|<td>$file_time</td><td>$file_size_ko</td>|g")
+                line=$(echo "$line" | sed 's|<td>|<td class="class-ok">|g')
+            else
+                if compare_time "$sla_time"; then
+                    line=$(echo "$line" | sed 's|<td>|<td class="class-nok">|g')
+                fi
+            fi
+        fi
+    fi
+    echo "$line" >> "$updated_file"
+done < "$html_file"
+
+# Remplacement de l'ancien HTML par la version mise à jour
+mv "$updated_file" "$html_file"
